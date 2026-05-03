@@ -2114,27 +2114,46 @@
         return;
       }
 
-      // ── 3. Fetch with timeout (5s) ──
+      // ── 3. Fetch with timeout (8s) ──
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
+      const timer = setTimeout(() => controller.abort(), 8000);
+      // 安全後備：12秒後若仍在載入中強制清除
+      const safetyTimer = setTimeout(() => {
+        if (mainEl.classList.contains('is-loading')) {
+          if (iconEl) { iconEl.classList.remove('is-loading'); iconEl.textContent = '⚠️'; }
+          mainEl.classList.remove('is-loading');
+          mainEl.textContent = '天氣暫不可用';
+          if (tempEl) tempEl.textContent = '點此重試';
+          const weatherBox = card.querySelector('[data-weather]');
+          if (weatherBox && !weatherBox._retryBound) {
+            weatherBox._retryBound = true;
+            weatherBox.style.cursor = 'pointer';
+            weatherBox.addEventListener('click', () => fetchWeatherForDay(card), { once: true });
+          }
+        }
+      }, 12000);
       try {
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,apparent_temperature,weathercode&timezone=Asia%2FTokyo`;
+        // 使用 daily 預報取得旅行當天的天氣
+        const targetDate = tripDate ? tripDate.toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&start_date=${targetDate}&end_date=${targetDate}`;
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
+        clearTimeout(safetyTimer);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        const code = data.current && typeof data.current.weathercode === 'number' ? data.current.weathercode : null;
-        const temp = data.current && typeof data.current.temperature_2m === 'number' ? Math.round(data.current.temperature_2m) : null;
-        const feels = data.current && typeof data.current.apparent_temperature === 'number' ? Math.round(data.current.apparent_temperature) : null;
+        const code = data.daily && Array.isArray(data.daily.weathercode) && data.daily.weathercode.length > 0 ? data.daily.weathercode[0] : null;
+        const tempMax = data.daily && Array.isArray(data.daily.temperature_2m_max) ? Math.round(data.daily.temperature_2m_max[0]) : null;
+        const tempMin = data.daily && Array.isArray(data.daily.temperature_2m_min) ? Math.round(data.daily.temperature_2m_min[0]) : null;
 
         // ── 4. Success ──
         if (iconEl) { iconEl.classList.remove('is-loading'); iconEl.textContent = code != null ? (WMO_ICON[code] || '🌡️') : '🌡️'; }
         mainEl.classList.remove('is-loading');
         mainEl.textContent = code != null ? (WMO_JA[code] || '天気情報') : '天気情報';
-        if (tempEl) tempEl.textContent = temp != null ? `${temp}℃ ／ 体感 ${feels}℃` : '';
+        if (tempEl) tempEl.textContent = (tempMax != null && tempMin != null) ? `最高 ${tempMax}℃ ／ 最低 ${tempMin}℃` : '';
 
       } catch (e) {
         clearTimeout(timer);
+        clearTimeout(safetyTimer);
         // ── 5. Error state: show icon + reason ──
         const isOffline = !navigator.onLine;
         const isTimeout = e.name === 'AbortError';
